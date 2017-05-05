@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">AppBackup</string>
+    <string name="button_backup">バックアップ</string>
+    <string name="storing">"保存中 : "</string>
+    <string name="backup_result">%1$d個バックアップしました。\n%2$d個失敗しました。</string>
+</resources>
