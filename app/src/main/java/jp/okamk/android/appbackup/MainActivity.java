@@ -5,9 +5,9 @@ import android.content.DialogInterface;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
-import android.os.Build;
+import android.media.MediaScannerConnection;
+import android.net.Uri;
 import android.os.Handler;
-import android.os.HandlerThread;
 import android.os.Message;
 import android.support.v7.app.AlertDialog;
 import android.support.v7.app.AppCompatActivity;
@@ -16,6 +16,8 @@ import android.util.Log;
 import android.view.View;
 import android.widget.Button;
 
+import java.io.BufferedInputStream;
+import java.io.BufferedOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileNotFoundException;
@@ -27,14 +29,15 @@ import java.util.List;
 public class MainActivity extends AppCompatActivity {
 
     private static final String TAG = "AppBackup";
-    private HandlerThread th = null;
-    private Handler mAsyncHanlder = null;
-    private static final int UIMESSAGE_BACKUP_START = 1;
-    private static final int UIMESSAGE_PROGRESS_START = 2;
-    private static final int UIMESSAGE_PROGRESS_END = 3;
-    private static final int UIMESSAGE_BACKUP_END = 4;
-    private static final int MESSAGE_BACKUP_START = 1;
-    private static final int MESSAGE_BACKUP_CANCEL = 2;
+
+    private static final int UIMESSAGE_PREPARE_BACKUP = 0;
+    private static final int UIMESSAGE_CANCEL_BACKUP = 1;
+    private static final int UIMESSAGE_BACKUP_START = 2;
+    private static final int UIMESSAGE_PROGRESS_START = 3;
+    private static final int UIMESSAGE_PROGRESS_END = 4;
+    private static final int UIMESSAGE_BACKUP_END = 5;
+    boolean isCanceled = false;
+
     private Button buttonBackup = null;
     private ProgressDialog progressDialog = null;
 
@@ -47,108 +50,90 @@ public class MainActivity extends AppCompatActivity {
         buttonBackup.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View arg0) {
-                backupApplications();
+                mHanlder.sendEmptyMessage(UIMESSAGE_PREPARE_BACKUP);
             }
         });
+    }
 
-        th = new HandlerThread("AppBackup");
-        th.start();
-        mAsyncHanlder = new Handler(th.getLooper()) {
-            boolean isCanceled = false;
+    Runnable r = new Runnable() {
+        @Override
+        public void run() {
+            ArrayList<String> stored = new ArrayList<String>();
+            ArrayList<String> failed = new ArrayList<String>();
+            PackageManager packageManager = getPackageManager();
+            List<ApplicationInfo> appInfos = getApplications();
+            Message messageBackupStart = mHanlder.obtainMessage(
+                    UIMESSAGE_BACKUP_START, appInfos.size());
+            mHanlder.sendMessage(messageBackupStart);
+            if (appInfos != null) {
+                for (ApplicationInfo appInfo : appInfos) {
+                    if (isCanceled) {
+                        Log.v(TAG, "cancel detected");
+                        break;
+                    }
+                    // ソースパス
+                    String sourceDir = appInfo.publicSourceDir;
+                    // アプリケーションラベル
+                    String appLabel = (String) appInfo
+                            .loadLabel(packageManager);
 
-            @Override
-            public void handleMessage(Message msg) {
-                switch (msg.what) {
-                    case MESSAGE_BACKUP_START:
-                        isCanceled = false;
-                        new Thread(r).start();
-                        break;
-                    case MESSAGE_BACKUP_CANCEL:
-                        Log.v(TAG, "cancel message detected");
-                        isCanceled = true;
-                        break;
+                    // バージョン番号
+                    String versionName = null;
+                    try {
+                        PackageInfo packageInfo = packageManager
+                                .getPackageInfo(appInfo.packageName,
+                                        PackageManager.GET_META_DATA);
+                        if (packageInfo != null) {
+                            versionName = packageInfo.versionName;
+                        }
+                    } catch (PackageManager.NameNotFoundException e) {
+                        e.printStackTrace();
+                    }
+
+                    String saveAppName = appLabel
+                            + (versionName != null ? " " : "")
+                            + versionName + ".apk";
+
+                    Message messageAppStart = mHanlder.obtainMessage(
+                            UIMESSAGE_PROGRESS_START, saveAppName);
+                    mHanlder.sendMessage(messageAppStart);
+                    if (saveApplication(sourceDir, saveAppName)) {
+                        stored.add(saveAppName);
+                    } else {
+                        failed.add(saveAppName);
+                    }
+                    Message messageAppEnd = mHanlder.obtainMessage(
+                            UIMESSAGE_PROGRESS_END, saveAppName);
+                    mHanlder.sendMessage(messageAppEnd);
                 }
             }
-
-            Runnable r = new Runnable() {
-                @Override
-                public void run() {
-                    ArrayList<String> stored = new ArrayList<String>();
-                    ArrayList<String> failed = new ArrayList<String>();
-                    PackageManager packageManager = getPackageManager();
-                    List<ApplicationInfo> appInfos = getApplications();
-                    Message messageBackupStart = mUIHanlder.obtainMessage(
-                            UIMESSAGE_BACKUP_START, appInfos.size());
-                    mUIHanlder.sendMessage(messageBackupStart);
-                    if (appInfos != null) {
-                        for (ApplicationInfo appInfo : appInfos) {
-                            if (isCanceled) {
-                                Log.v(TAG, "cancel detected");
-                                break;
-                            }
-                            // ソースパス
-                            String sourceDir = appInfo.publicSourceDir;
-                            // アプリケーションラベル
-                            String appLabel = (String) appInfo
-                                    .loadLabel(packageManager);
-
-                            // バージョン番号
-                            String versionName = null;
-                            try {
-                                PackageInfo packageInfo = packageManager
-                                        .getPackageInfo(appInfo.packageName,
-                                                PackageManager.GET_META_DATA);
-                                if (packageInfo != null) {
-                                    versionName = packageInfo.versionName;
-                                }
-                            } catch (PackageManager.NameNotFoundException e) {
-                                e.printStackTrace();
-                            }
-
-                            String saveAppName = appLabel
-                                    + (versionName != null ? " " : "")
-                                    + versionName + ".apk";
-
-                            Message messageAppStart = mUIHanlder.obtainMessage(
-                                    UIMESSAGE_PROGRESS_START, saveAppName);
-                            mUIHanlder.sendMessage(messageAppStart);
-                            if (saveApplication(sourceDir, saveAppName)) {
-                                stored.add(saveAppName);
-                            } else {
-                                failed.add(saveAppName);
-                            }
-                            Message messageAppEnd = mUIHanlder.obtainMessage(
-                                    UIMESSAGE_PROGRESS_END, saveAppName);
-                            mUIHanlder.sendMessage(messageAppEnd);
-                        }
-                    }
-                    String backupResult = String.format(getString(R.string.backup_result), stored.size(), failed.size());
-                    Message messageBackupEnd = mUIHanlder.obtainMessage(
-                            UIMESSAGE_BACKUP_END, backupResult);
-                    mUIHanlder.sendMessage(messageBackupEnd);
-                }
-            };
-        };
-    }
+            String backupResult = String.format(getString(R.string.backup_result), stored.size(), failed.size());
+            Message messageBackupEnd = mHanlder.obtainMessage(
+                    UIMESSAGE_BACKUP_END, backupResult);
+            mHanlder.sendMessage(messageBackupEnd);
+        }
+    };
 
     @Override
     protected void onDestroy() {
         super.onDestroy();
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR2) {
-            th.quitSafely();
-        } else {
-            th.quit();
-        }
     }
 
-    private Handler mUIHanlder = new Handler() {
+    private Handler mHanlder = new Handler() {
         @Override
         public void handleMessage(Message msg) {
             switch (msg.what) {
+                case UIMESSAGE_PREPARE_BACKUP:
+                    buttonBackup.setEnabled(false);
+                    isCanceled = false;
+                    new Thread(r).start();
+                    break;
+                case UIMESSAGE_CANCEL_BACKUP:
+                    isCanceled = true;
+                    break;
                 case UIMESSAGE_BACKUP_START:
                     int appCount = (Integer) msg.obj;
                     Log.v(TAG, "Backup start appCount = " + appCount);
-                    buttonBackup.setEnabled(false);
 
                     progressDialog = new ProgressDialog(MainActivity.this);
                     progressDialog.setTitle(R.string.app_name);
@@ -159,8 +144,7 @@ public class MainActivity extends AppCompatActivity {
                                 public void onClick(DialogInterface dialog,
                                                     int which) {
                                     Log.v(TAG, "send MESSAGE_BACKUP_CANCEL");
-                                    mAsyncHanlder
-                                            .sendEmptyMessage(MESSAGE_BACKUP_CANCEL);
+                                    sendEmptyMessage(UIMESSAGE_CANCEL_BACKUP);
                                 }
                             });
                     progressDialog.setCancelable(false);
@@ -210,10 +194,6 @@ public class MainActivity extends AppCompatActivity {
         }
     };
 
-    void backupApplications() {
-        mAsyncHanlder.sendEmptyMessage(MESSAGE_BACKUP_START);
-    }
-
     List<ApplicationInfo> getApplications() {
         List<ApplicationInfo> ret = new ArrayList<ApplicationInfo>();
         PackageManager packageManager = getPackageManager();
@@ -249,35 +229,59 @@ public class MainActivity extends AppCompatActivity {
         File outFile = new File(getExternalFilesDir(null), replace(outFileName));
 
         // フォルダ作成
-        if (new File(outFile.getParent()).mkdirs()) {
+        if (outFile.getParentFile().mkdirs()) {
             return ret;
         }
 
-        FileInputStream inStream = null;
-        FileOutputStream outStream = null;
+        BufferedInputStream in = null;
+        BufferedOutputStream out = null;
         try {
-            inStream = new FileInputStream(inFile);
-            outStream = new FileOutputStream(outFile);
-
+            in = new BufferedInputStream(new FileInputStream(inFile));
+            out = new BufferedOutputStream(new FileOutputStream(outFile));
             byte[] buffer = new byte[1024];
             int total = 0;
             int read = -1;
-            while ((read = inStream.read(buffer)) != -1) {
+            while ((read = in.read(buffer)) != -1) {
                 total += read;
-                outStream.write(buffer, 0, read);
+                out.write(buffer, 0, read);
             }
-            // Log.v(TAG,
-            // inPath + " is stored into " + outPath + " ("
-            // + String.valueOf(total) + "bytes)");
-            outStream.close();
-            inStream.close();
             ret = true;
         } catch (FileNotFoundException e) {
             e.printStackTrace();
         } catch (IOException e) {
             e.printStackTrace();
         } finally {
+            if (out != null) {
+                try {
+                    out.close();
+                } catch (IOException e) {
+                    e.printStackTrace();
+                }
+            }
+            if (in != null) {
+                try {
+                    in.close();
+                } catch (IOException e) {
+                    e.printStackTrace();
+                }
+            }
+        }
+
+        if (ret) {
+            mediascan(outFile);
         }
         return ret;
+    }
+
+    void mediascan(File file) {
+        MediaScannerConnection.scanFile(this,
+                new String[]{file.getAbsolutePath()}, null,
+                new MediaScannerConnection.OnScanCompletedListener() {
+                    @Override
+                    public void onScanCompleted(String path, Uri uri) {
+                        Log.v("MediaScanWork", "file " + path
+                                + " was scanned seccessfully: " + uri);
+                    }
+                });
     }
 }
